@@ -1,7 +1,12 @@
 from typing import List
 
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+import numpy as np
+from sklearn.preprocessing import LabelEncoder, StandardScaler, FunctionTransformer
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 class FeatureEngineering:
     """
@@ -176,34 +181,99 @@ class FeatureEngineering:
             'CountDebits', 'CountCredits', 'MaxDebit', 'MaxCredit', 
             'NetFlow', 'ValuePerTxn', 'FractionCredits', 'CV_Value'
         ]
+        keys = ['CustomerId']
         
         # Combine and filter to only those present in the data
-        cols_to_keep = date_features + aggregate_features
+        cols_to_keep = date_features + aggregate_features + keys
         present_cols = [col for col in cols_to_keep if col in data.columns]
         
         return data[present_cols]
 
     @staticmethod
-    def normalize_numerical_features(data: pd.DataFrame) -> tuple[pd.DataFrame, StandardScaler]:
+    def normalize_numerical_features(data: pd.DataFrame) -> tuple[pd.DataFrame, ColumnTransformer]:
         """
-        A function that normalizes numerical data.
-
-        **Note: Make sure to run this before categorical encoding, because normalizing categorical encodings is very wrong**
-
-        Args:
-            data(pd.DataFrame): the data whose numerical values are to be normalized
+        Applies Log transformation followed by Standardization to continuous numerical features.
+        Passes through date and binary features unchanged.
+        """
+        # 1. Identify Column Groups
         
-        Returns:
-            pd.DataFrame: the dataframe with normalized numerical columns
+        # Group A: Log-Transform + Standardize (High variance, strictly positive or zero)
+        log_scale_cols = [
+            'TransactionCount', 'TotalValue', 'AvgValue', 'MedianValue', 
+            'StdValue', 'P75Value', 'P90Value', 'TotalDebit', 'TotalCredit', 
+            'CountDebits', 'CountCredits', 'MaxDebit', 'MaxCredit', 
+            'ValuePerTxn', 'CV_Value'
+        ]
+        
+        # Group B: Standardize Only (Can be negative or already bounded)
+        scale_cols = ['NetFlow', 'FractionCredits']
+        
+        # Group C: Passthrough (Date parts, Binary flags)
+        passthrough_cols = [
+            'Hour', 'Day', 'Month', 'Year', 'Weekday', 
+            'IsWeekend', 'IsBusinessHour', "CustomerId"
+        ]
+        
+        # Filter columns to ensure they exist in the dataframe
+        log_scale_cols = [c for c in log_scale_cols if c in data.columns]
+        scale_cols = [c for c in scale_cols if c in data.columns]
+        passthrough_cols = [c for c in passthrough_cols if c in data.columns]
+
+        # 2. Define Pipelines
+        
+        # Log1p handles zeros safely (log(0+1) = 0)
+        log_pipeline = Pipeline([
+            ('log', FunctionTransformer(np.log1p, validate=False)), 
+            ('scaler', StandardScaler())
+        ])
+        
+        # Just scaling
+        scale_pipeline = Pipeline([
+            ('scaler', StandardScaler())
+        ])
+
+        # 3. Create the ColumnTransformer
+        # remainder='drop' will drop TransactionStartTime (we can add it back if needed, 
+        # but usually we drop it before modeling)
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('log_scale', log_pipeline, log_scale_cols),
+                ('scale', scale_pipeline, scale_cols),
+                ('pass', 'passthrough', passthrough_cols)
+            ],
+            remainder='drop' 
+        )
+
+        # 4. Fit and Transform
+        # The output is a numpy array
+        transformed_data = preprocessor.fit_transform(data)
+        
+        # 5. Reconstruct DataFrame
+        # Get new column names in the order they were processed
+        new_cols = log_scale_cols + scale_cols + passthrough_cols
+        
+        df_normalized = pd.DataFrame(transformed_data, columns=new_cols, index=data.index)
+        
+        # Optional: If you really need to keep TransactionStartTime, you can join it back
+        if 'TransactionStartTime' in data.columns:
+            df_normalized['TransactionStartTime'] = data['TransactionStartTime']
+
+        return df_normalized, preprocessor
+
+    @staticmethod
+    def plot_distribution_comparison(original_df, normalized_df, column_name):
         """
-
-        # obtain the numerical columns
-        numerical_columns = list(data._get_numeric_data().columns)
-
-        scaler = StandardScaler()
-        scaler = scaler.fit(data[numerical_columns])
-
-        # normalized data
-        data[numerical_columns] = scaler.transform(data[numerical_columns])
-
-        return data, scaler
+        Plots the distribution of a feature before and after normalization.
+        """
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        
+        # Original Data
+        sns.histplot(original_df[column_name], kde=True, ax=axes[0], color='blue')
+        axes[0].set_title(f'Original: {column_name}')
+        
+        # Normalized Data
+        sns.histplot(normalized_df[column_name], kde=True, ax=axes[1], color='green')
+        axes[1].set_title(f'Normalized: {column_name}')
+        
+        plt.tight_layout()
+        plt.show()
