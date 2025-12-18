@@ -2,7 +2,7 @@ from typing import List
 import pandas as pd
 
 
-class CreditScoreEngine:
+class ProxyTargetEngineering:
     """
     A class for organizing the functions that are concerned with generating credit score of user(s) from given transactions of the user(s).
     """
@@ -138,3 +138,46 @@ class CreditScoreEngine:
         boundary = data[score_column].quantile(q=0.55)
 
         return data, boundary
+    
+    @staticmethod
+    def aggregate_data_per_customer(data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Aggregates the data per customer, taking the mode for categorical/date features
+        and the mean for numerical features. Drops TransactionStartTime.
+        
+        Args:
+            data(pd.DataFrame): the dataframe to aggregate
+            
+        Returns:
+            pd.DataFrame: the aggregated dataframe
+        """
+        # Drop TransactionStartTime as requested
+        if 'TransactionStartTime' in data.columns:
+            data = data.drop(columns=['TransactionStartTime'])
+            
+        # Define aggregation dictionary
+        agg_dict = {}
+        
+        # Columns to take the mode (most frequent value)
+        mode_cols = ['Hour', 'Day', 'Month', 'Year', 'Weekday', 'IsWeekend', 'IsBusinessHour']
+        
+        # Identify which mode columns are actually present
+        present_mode_cols = [c for c in mode_cols if c in data.columns]
+        
+        for col in present_mode_cols:
+            # Lambda to get the first mode, safe for empty series
+            agg_dict[col] = lambda x: x.mode().iloc[0] if not x.mode().empty else 0
+                
+        # For all other columns (numerical), take the mean
+        # We exclude the mode_cols and CustomerId from this list
+        # We also ensure we only include numeric columns for 'mean' aggregation to avoid errors
+        numeric_cols = data.select_dtypes(include=['number']).columns
+        num_cols = [c for c in numeric_cols if c not in present_mode_cols and c != 'CustomerId']
+        
+        for col in num_cols:
+            agg_dict[col] = 'mean'
+            
+        # Group by CustomerId and aggregate
+        aggregated_data = data.groupby('CustomerId').agg(agg_dict)
+        
+        return aggregated_data
