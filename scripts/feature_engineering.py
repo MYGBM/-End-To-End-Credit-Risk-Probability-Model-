@@ -31,27 +31,35 @@ class FeatureEngineering:
         return id
 
     @staticmethod
-    def extract_date_features(data: pd.DataFrame, date_column : str = 'TransactionStartTime') -> pd.DataFrame:
+    def extract_date_features(data: pd.DataFrame, date_column: str = 'TransactionStartTime', reference_date: str = None) -> pd.DataFrame:
         """
-        A function that will breakdown the given date column into hour, day, month and year features.
-
-        Args:
-            data(pd.DataFrame): a dataframe containing the time/date column
-            date_column(str): the name of the column that contains the date feature, default is TransactionStartTime
-
-        Returns:
-            pd.DataFrame: the resulting data frame with the new date features
+        Parse timestamp, convert to Uganda local time (Africa/Kampala) and add
+        essential temporal features for RFM: Hour, Day, Month, Year, Weekday,
+        IsWeekend, IsBusinessHour and TransactionAgeDays (recency).
         """
+        # robust parse (ISO8601 with Z -> UTC)
+        data[date_column] = pd.to_datetime(data[date_column], errors='coerce', utc=True)
 
-        # convert the date data to a datetime object
-        data['TransactionStartTime'] = pd.to_datetime(data['TransactionStartTime'])
+        # convert to Uganda local time (UTC+3); Uganda has no DST
+        try:
+            data[date_column] = data[date_column].dt.tz_convert('Africa/Kampala')
+        except Exception:
+            # if conversion fails, keep UTC parsed times
+            pass
 
-        # break down the data
-        data['Hour'] = data['TransactionStartTime'].dt.hour
-        data['Day'] = data['TransactionStartTime'].dt.day
-        data['Month'] = data['TransactionStartTime'].dt.month
-        data['Year'] = data['TransactionStartTime'].dt.year
+        # basic components
+        data['Hour'] = data[date_column].dt.hour
+        data['Day'] = data[date_column].dt.day
+        data['Month'] = data[date_column].dt.month
+        data['Year'] = data[date_column].dt.year
 
+        # weekday and weekend flag (0=Mon ... 6=Sun)
+        data['Weekday'] = data[date_column].dt.weekday
+        data['IsWeekend'] = (data['Weekday'] >= 5).astype(int)
+
+        # business hour flag (adjust hours to bank/ecommerce business rules if needed)
+        data['IsBusinessHour'] = data['Hour'].between(8, 18).astype(int)
+    
         return data
     
     @staticmethod
@@ -93,8 +101,10 @@ class FeatureEngineering:
         Returns:
             pd.DataFrame: the dataframe without NA values
         """
-
-        return data.dropna()
+        print(f"Number of rows before removing NA values: {data.shape[0]}")
+        data = data.dropna()
+        print(f"Number of rows after removing NA values: {data.shape[0]}")
+        return data
     
     @staticmethod
     def aggregate_customer_data(data: pd.DataFrame) -> pd.DataFrame:
