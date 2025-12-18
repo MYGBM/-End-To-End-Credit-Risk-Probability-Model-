@@ -93,7 +93,7 @@ class FeatureEngineering:
     @staticmethod
     def handle_missing_data(data: pd.DataFrame) -> pd.DataFrame:
         """
-        A function that will remove rows that have NA values.
+        A function that will remove impute rows that are NA with zeros 
 
         Args:
             data(pd.DataFrame): the dataframe we want NA values to be removed from
@@ -101,36 +101,87 @@ class FeatureEngineering:
         Returns:
             pd.DataFrame: the dataframe without NA values
         """
-        print(f"Number of rows before removing NA values: {data.shape[0]}")
-        data = data.dropna()
-        print(f"Number of rows after removing NA values: {data.shape[0]}")
+        print("Missing values before imputation:")
+        print(data.isna().sum())
+        data = data.fillna(0)
+        print("Missing values after imputation:")
+        print(data.isna().sum())
         return data
     
     @staticmethod
     def aggregate_customer_data(data: pd.DataFrame) -> pd.DataFrame:
         """
-        A function that aggregates a customers data from a transaction dataset and then adds the new data to the original data.
-
-        Args:
-            data(pd.DataFrame): the data from which the customer data is going to be aggregated
-
-        Returns:
-            pd.DataFrame: a dataframe which contains the original data and the aggregated data
+        Aggregate customer-level numeric features using TransactionId, Value, and Amount.
+        Produces frequency, R/M-like monetary stats, directional cashflow (debit vs credit),
+        dispersion, percentiles and simple ratios. Returns the original dataframe joined
+        with these aggregated features on CustomerId.
         """
+        # ensure numeric columns exist and are numeric
+        data['Value'] = pd.to_numeric(data['Value'], errors='coerce')
+        data['Amount'] = pd.to_numeric(data['Amount'], errors='coerce')
+        data["FraudResult"] = pd.to_numeric(data["FraudResult"], errors='coerce')
+        grp = data.groupby('CustomerId')
 
-        # group and aggregate the data
-        customer_grouping = data.groupby(by="CustomerId")
-        customer_aggregation = customer_grouping.agg(
-            TotalTransaction = ('Amount', 'sum'),
-            AverageTransaction = ('Amount', 'mean'),
+        customer_aggregation = grp.agg(
             TransactionCount = ('TransactionId', 'count'),
-            StdTransaction = ('Amount', 'std')
+            TotalValue = ('Value', 'sum'),
+            AvgValue = ('Value', 'mean'),
+            MedianValue = ('Value', 'median'),
+            StdValue = ('Value', 'std'),
+            P75Value = ('Value', lambda x: x.quantile(0.75) if not x.dropna().empty else float('nan')),
+            P90Value = ('Value', lambda x: x.quantile(0.90) if not x.dropna().empty else float('nan')),
+            # directional (Amount is signed): debits > 0, credits < 0
+            TotalDebit = ('Amount', lambda x: x[x > 0].sum()),
+            TotalCredit = ('Amount', lambda x: -x[x < 0].sum()),  # make positive
+            CountDebits = ('Amount', lambda x: (x > 0).sum()),
+            CountCredits = ('Amount', lambda x: (x < 0).sum()),
+            MaxDebit = ('Amount', lambda x: x[x > 0].max() if (x > 0).any() else float('nan')),
+            MaxCredit = ('Amount', lambda x: -x[x < 0].min() if (x < 0).any() else float('nan')),
+            FraudPercentage = ("FraudResult", lambda x:(x==1).sum()/len(x) * 100)
         )
 
-        # join the newly aggregated data with the previous data over the customerId
-        data = data.join(other=customer_aggregation, how='left', on='CustomerId')
+        # derived metrics
+        customer_aggregation['NetFlow'] = customer_aggregation['TotalDebit'] - customer_aggregation['TotalCredit']
+        customer_aggregation['ValuePerTxn'] = customer_aggregation['TotalValue'] / customer_aggregation['TransactionCount'].replace(0, float('nan'))
+        customer_aggregation['FractionCredits'] = customer_aggregation['CountCredits'] / customer_aggregation['TransactionCount'].replace(0, float('nan'))
+        customer_aggregation['CV_Value'] = customer_aggregation['StdValue'] / customer_aggregation['AvgValue'].replace(0, float('nan'))
 
-        return data
+        # join aggregated features back to original transactions by CustomerId
+        data = data.join(customer_aggregation, on='CustomerId', how='left', rsuffix='_cust')
+    
+        return data 
+    
+    # Write 
+
+    @staticmethod
+    def select_features(data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Selects only the engineered features and the original date column, dropping all others.
+        
+        Args:
+            data(pd.DataFrame): the dataframe with all features
+            
+        Returns:
+            pd.DataFrame: dataframe with only selected features
+        """
+        # Columns to keep
+        date_features = [
+            'TransactionStartTime', 'Hour', 'Day', 'Month', 'Year', 
+            'Weekday', 'IsWeekend', 'IsBusinessHour', 'TransactionAgeDays'
+        ]
+        
+        aggregate_features = [
+            'TransactionCount', 'TotalValue', 'AvgValue', 'MedianValue', 
+            'StdValue', 'P75Value', 'P90Value', 'TotalDebit', 'TotalCredit', 
+            'CountDebits', 'CountCredits', 'MaxDebit', 'MaxCredit', 
+            'NetFlow', 'ValuePerTxn', 'FractionCredits', 'CV_Value'
+        ]
+        
+        # Combine and filter to only those present in the data
+        cols_to_keep = date_features + aggregate_features
+        present_cols = [col for col in cols_to_keep if col in data.columns]
+        
+        return data[present_cols]
 
     @staticmethod
     def normalize_numerical_features(data: pd.DataFrame) -> tuple[pd.DataFrame, StandardScaler]:
